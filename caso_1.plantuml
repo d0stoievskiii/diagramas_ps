@@ -1,0 +1,120 @@
+@startuml
+title Gerenciamento da Partida - Inicialização
+
+hide footbox
+autonumber
+
+actor "Cliente do GameInputPort" as Client
+
+participant "engine: GameEngine\n<<Controller>>" as Engine
+participant "game: Game\n<<aggregate root>>" as Game
+participant "board: Board" as Board
+participant "deck: TileDeck" as Deck
+participant "turn: Turn\n<<Context>>" as Turn
+participant "startTile: PlacedTile" as StartTile
+
+note over Engine, Game
+GameEngine coordena a criação da partida.
+
+As dependências de regras de Game
+(TilePlacementRules, MeeplePlacementRules
+e ScoringRules) são configuradas pela
+composição da aplicação e são omitidas
+deste caso de uso.
+end note
+
+
+Client -> Engine : startGame(playerSetups)
+activate Engine
+
+
+loop para cada setup em playerSetups
+
+    create participant "player: Player" as Player
+    Engine -> Player ++ : <<create>>(setup.name, setup.color)
+
+    Player --> Engine
+    deactivate Player
+
+end
+
+
+create Game
+Engine -> Game ++ : <<create>>(players)
+
+note right of Game
+Game valida os invariantes iniciais:
+
+- 2 a 5 jogadores;
+- cores distintas;
+- cada jogador inicia
+  com 7 meeples disponíveis.
+end note
+
+
+create Board
+Game -> Board ++ : <<create>>()
+Board --> Game
+deactivate Board
+
+
+create Deck
+Game -> Deck ++ : <<create>>(peças padrão de compra)
+Deck --> Game
+deactivate Deck
+
+note right of Deck
+O monte contém somente as peças
+de compra do jogo-base.
+
+A peça inicial não pertence ao monte.
+end note
+
+
+Game -> Deck : shuffle()
+activate Deck
+Deck --> Game
+deactivate Deck
+
+
+create Turn
+Game -> Turn ++ : <<create>>()
+
+note right of Turn
+Estado inicial:
+state = DrawTileState
+end note
+
+Turn --> Game
+deactivate Turn
+
+
+create StartTile
+Game -> StartTile ++ : <<create>>(\npeça inicial,\nPlacement(Position(0,0), DEG_0)\n)
+
+StartTile --> Game
+deactivate StartTile
+
+
+Game -> Board : place(startTile)
+activate Board
+Board --> Game
+deactivate Board
+
+
+note right of Game
+Estado inicial do agregado:
+
+status = ACTIVE
+currentPlayerIndex = 0
+Turn.state = DrawTileState
+end note
+
+
+Game --> Engine
+deactivate Game
+
+Engine --> Client : partida iniciada
+deactivate Engine
+
+@enduml

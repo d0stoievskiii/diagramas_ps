@@ -1,0 +1,502 @@
+@startuml
+title Turno de Jogo
+
+hide footbox
+autonumber
+
+actor "Cliente do GameInputPort" as Client
+
+participant "engine: GameEngine\n<<Controller>>" as Engine
+participant "game: Game\n<<aggregate root>>" as Game
+
+participant "deck: TileDeck" as Deck
+participant "turn: Turn\n<<Context>>" as Turn
+
+participant "drawState: DrawTileState\n<<State>>" as DrawState
+participant "placeTileState: PlaceTileState\n<<State>>" as PlaceTileState
+participant "placeMeepleState: PlaceMeepleState\n<<State>>" as PlaceMeepleState
+
+participant "tileRules: TilePlacementRules\n<<Pure Fabrication>>" as TileRules
+participant "meepleRules: MeeplePlacementRules\n<<Pure Fabrication>>" as MeepleRules
+
+participant "board: Board" as Board
+participant "placedTile: PlacedTile" as PlacedTile
+participant "meeplePlacement: MeeplePlacement" as MeeplePlacement
+
+
+note over Game, PlaceMeepleState
+Game consulta Turn.require... ANTES
+de alterar o estado do agregado.
+
+InvalidTurnPhaseException pode ser
+lançada pelos States.
+
+record... e resolveMeeple()
+realizam as transições DEPOIS
+da ação correspondente.
+end note
+
+
+' =====================================================
+' SORTEIO DE UMA PEÇA JOGÁVEL
+' =====================================================
+
+Client -> Engine : drawTile()
+
+note right of Engine
+replacementRequired = true
+end note
+
+
+loop [replacementRequired]
+
+    Engine -> Game : hasTilesRemaining()
+    Game --> Engine : remaining?
+
+
+    alt monte esgotado
+
+        note right of Engine
+        replacementRequired = false
+        end note
+
+
+    else ainda há peças
+
+        Engine -> Game : drawTile()
+        activate Game
+
+        Game -> Turn : requireDrawTile()
+        activate Turn
+
+        Turn -> DrawState : requireDrawTile()
+        DrawState --> Turn : válido
+
+        Turn --> Game
+        deactivate Turn
+
+
+        Game -> Deck : draw()
+        Deck --> Game : tile
+
+
+        Game -> Turn : recordDrawnTile(tile)
+        activate Turn
+
+        Turn -> DrawState : recordDrawnTile(turn, tile)
+        activate DrawState
+
+        note right of DrawState
+        DrawTileState
+        → PlaceTileState
+        end note
+
+        DrawState --> Turn
+        deactivate DrawState
+
+        Turn --> Game
+        deactivate Turn
+
+
+        Game --> Engine : tile
+        deactivate Game
+
+
+        Engine -> Game : legalPlacements()
+        activate Game
+
+        Game -> Turn : requirePlaceTile()
+        Turn -> PlaceTileState : requirePlaceTile()
+        PlaceTileState --> Turn
+        Turn --> Game
+
+
+        Game -> TileRules : legalPlacements(\nboard, currentDrawnTile\n)
+        activate TileRules
+
+        TileRules -> Board : frontierPositions()
+        Board --> TileRules : positions
+
+
+        loop posição candidata x rotação
+
+            TileRules -> Board : neighbors(position)
+            Board --> TileRules : neighbors
+
+            note right of TileRules
+            A posição deve:
+            - estar vazia;
+            - tocar outra peça;
+            - ser compatível com
+              todos os vizinhos.
+
+            Tile.featureAt(...)
+            resolve os contatos.
+            end note
+
+        end
+
+
+        TileRules --> Game : placements
+        deactivate TileRules
+
+        Game --> Engine : placements
+        deactivate Game
+
+
+        alt placements está vazio
+
+            Engine -> Game : discardDrawnTile()
+            activate Game
+
+            note right of Game
+            Game protege a invariável:
+            uma peça só pode ser descartada
+            quando não existe encaixe legal.
+            end note
+
+            Game -> TileRules : legalPlacements(\nboard, currentDrawnTile\n)
+            TileRules --> Game : []
+
+            Game -> Turn : discardDrawnTile()
+            activate Turn
+
+            Turn -> PlaceTileState : discardDrawnTile(turn)
+
+            note right of PlaceTileState
+            A peça é descartada.
+
+            PlaceTileState
+            → DrawTileState
+
+            O jogador não é trocado.
+            end note
+
+            PlaceTileState --> Turn
+            Turn --> Game
+
+            deactivate Turn
+
+            Game --> Engine
+            deactivate Game
+
+
+        else existe colocação legal
+
+            note right of Engine
+            replacementRequired = false.
+
+            A peça permanece registrada
+            no Turn.
+            end note
+
+        end
+    end
+end
+
+
+Engine -> Game : currentDrawnTile()
+Game --> Engine : tile [0..1]
+
+
+alt nenhuma peça jogável restou
+
+    Engine -> Engine : finishGame()
+    Engine --> Client : nenhum tile
+
+else peça jogável disponível
+
+    Engine --> Client : tile
+
+end
+
+
+' =====================================================
+' CONSULTA DAS COLOCAÇÕES LEGAIS
+' =====================================================
+
+Client -> Engine : getLegalPlacements()
+
+Engine -> Game : legalPlacements()
+activate Game
+
+Game -> Turn : requirePlaceTile()
+Turn -> PlaceTileState : requirePlaceTile()
+PlaceTileState --> Turn
+Turn --> Game
+
+Game -> TileRules : legalPlacements(\nboard, currentDrawnTile\n)
+TileRules --> Game : placements
+
+Game --> Engine : placements
+deactivate Game
+
+Engine --> Client : placements
+
+
+' =====================================================
+' COLOCAÇÃO DA PEÇA
+' =====================================================
+
+Client -> Engine : placeTile(placement)
+
+Engine -> Game : placeTile(placement)
+activate Game
+
+
+Game -> Turn : requirePlaceTile()
+activate Turn
+
+Turn -> PlaceTileState : requirePlaceTile()
+PlaceTileState --> Turn : válido
+
+Turn --> Game
+deactivate Turn
+
+
+Game -> TileRules : canPlace(\nboard, currentDrawnTile, placement\n)
+TileRules --> Game : valid?
+
+
+break [colocação inválida]
+    Game --> Engine : InvalidPlacementException
+    Engine --> Client : InvalidPlacementException
+end
+
+
+create PlacedTile
+Game -> PlacedTile : <<create>>(\ncurrentDrawnTile, placement\n)
+PlacedTile --> Game
+
+
+Game -> Board : place(placedTile)
+Board --> Game
+
+
+Game -> Turn : recordPlacedTile(placedTile)
+activate Turn
+
+Turn -> PlaceTileState : recordPlacedTile(\nturn, placedTile\n)
+
+note right of PlaceTileState
+PlaceTileState
+→ PlaceMeepleState
+end note
+
+PlaceTileState --> Turn
+Turn --> Game
+
+deactivate Turn
+
+
+Game --> Engine : placedTile
+deactivate Game
+
+Engine --> Client : peça posicionada
+
+
+' =====================================================
+' CONSULTA DAS FEATURES LEGAIS PARA MEEPLE
+' =====================================================
+
+Client -> Engine : getLegalMeepleFeatures()
+
+Engine -> Game : legalMeepleFeatures()
+activate Game
+
+
+Game -> Turn : requireMeepleDecision()
+activate Turn
+
+Turn -> PlaceMeepleState : requireMeepleDecision()
+PlaceMeepleState --> Turn
+Turn --> Game
+
+deactivate Turn
+
+
+Game -> MeepleRules : legalFeatures(\nboard, meeples, currentPlacedTile\n)
+activate MeepleRules
+
+note right of MeepleRules
+Considera somente features
+da peça recém-colocada.
+
+Também verifica ausência de meeple
+na FeatureRegion conectada.
+end note
+
+MeepleRules --> Game : featureRefs
+deactivate MeepleRules
+
+
+Game --> Engine : featureRefs
+deactivate Game
+
+Engine --> Client : featureRefs
+
+
+' =====================================================
+' DECISÃO DE MEEPLE
+' =====================================================
+
+alt jogador coloca meeple
+
+    Client -> Engine : placeMeeple(featureRef)
+
+    Engine -> Game : placeMeeple(featureRef)
+    activate Game
+
+
+    Game -> Turn : requireMeepleDecision()
+    activate Turn
+
+    Turn -> PlaceMeepleState : requireMeepleDecision()
+    PlaceMeepleState --> Turn : válido
+
+    Turn --> Game
+    deactivate Turn
+
+
+    note right of Game
+    Game verifica:
+    - meeple disponível;
+    - feature pertence à
+      peça recém-colocada.
+    end note
+
+
+    Game -> MeepleRules : canPlace(\nboard, meeples, featureRef\n)
+    activate MeepleRules
+
+    MeepleRules --> Game : valid?
+    deactivate MeepleRules
+
+
+    break [colocação de meeple inválida]
+        Game --> Engine : InvalidMeeplePlacementException
+        Engine --> Client : InvalidMeeplePlacementException
+    end
+
+
+    create MeeplePlacement
+    Game -> MeeplePlacement : <<create>>(\ncurrentPlayer, featureRef\n)
+
+    MeeplePlacement --> Game
+
+
+    Game -> Turn : resolveMeeple()
+    activate Turn
+
+    Turn -> PlaceMeepleState : resolveMeeple(turn)
+
+    note right of PlaceMeepleState
+    A decisão de meeple foi resolvida.
+
+    placedTile ainda permanece
+    disponível para a pontuação.
+    end note
+
+    PlaceMeepleState --> Turn
+    Turn --> Game
+
+    deactivate Turn
+
+
+    Game --> Engine
+    deactivate Game
+
+
+else jogador não coloca meeple
+
+    Client -> Engine : skipMeeple()
+
+    Engine -> Game : skipMeeple()
+    activate Game
+
+
+    Game -> Turn : requireMeepleDecision()
+    activate Turn
+
+    Turn -> PlaceMeepleState : requireMeepleDecision()
+    PlaceMeepleState --> Turn
+    Turn --> Game
+
+    deactivate Turn
+
+
+    Game -> Turn : resolveMeeple()
+    activate Turn
+
+    Turn -> PlaceMeepleState : resolveMeeple(turn)
+    PlaceMeepleState --> Turn
+
+    Turn --> Game
+    deactivate Turn
+
+
+    Game --> Engine
+    deactivate Game
+
+end
+
+
+' =====================================================
+' RESOLUÇÃO DO TURNO
+' =====================================================
+
+Engine -> Engine ++ : resolveTurn()
+
+
+Engine -> Game : scoreCompletedFeatures()
+activate Game
+
+note right of Game
+Game delega a pontuação para
+ScoringRules e aplica internamente
+os ScoreAwards produzidos.
+
+Detalhado no diagrama de
+pontuação de final de turno.
+end note
+
+Game --> Engine
+deactivate Game
+
+
+Engine -> Game : hasTilesRemaining()
+Game --> Engine : remaining?
+
+
+alt ainda existem peças
+
+    Engine -> Game : nextPlayer()
+    activate Game
+
+    Game -> Turn : reset()
+    activate Turn
+
+    note right of Turn
+    Limpa drawnTile e placedTile
+    e retorna para DrawTileState.
+    end note
+
+    Turn --> Game
+    deactivate Turn
+
+    Game --> Engine
+    deactivate Game
+
+
+else monte esgotado
+
+    Engine -> Engine : finishGame()
+
+end
+
+
+deactivate Engine
+
+Engine --> Client : ação concluída
+
+@enduml

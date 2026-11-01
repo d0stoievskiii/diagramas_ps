@@ -1,0 +1,202 @@
+@startuml
+title Pontuação de Final de Turno
+
+hide footbox
+autonumber
+
+participant "engine: GameEngine\n<<Controller>>" as Engine
+participant "game: Game\n<<aggregate root>>" as Game
+
+participant "scoring: ScoringRules\n<<Pure Fabrication>>" as Scoring
+participant "connectivity: FeatureConnectivity\n<<Pure Fabrication>>" as Connectivity
+
+participant "board: Board" as Board
+participant "placedTile: PlacedTile" as PlacedTile
+participant "tile: Tile" as Tile
+
+participant "strategy: FeatureScoringStrategy\n<<Strategy>>" as Strategy
+participant "award: ScoreAward\n<<value object>>" as Award
+participant "player: Player" as Player
+
+
+note over Engine, Game
+Este fluxo ocorre dentro de
+GameEngine.resolveTurn().
+
+GameEngine apenas solicita a pontuação.
+Game protege e altera o estado do agregado.
+end note
+
+
+Engine -> Game : scoreCompletedFeatures()
+activate Game
+
+
+Game -> Scoring : completedAwards(\nboard,\nmeeples,\ncurrentPlacedTile\n)
+activate Scoring
+
+
+' =====================================================
+' DESCOBERTA DAS REGIÕES CANDIDATAS
+' =====================================================
+
+Scoring -> PlacedTile : tile()
+PlacedTile --> Scoring : tile
+
+Scoring -> Tile : features()
+Tile --> Scoring : placedFeatures
+
+
+note right of Scoring
+São criadas FeatureRefs para
+CITY, ROAD e MONASTERY presentes
+na peça recém-colocada.
+
+FIELD não pontua durante o turno.
+end note
+
+
+Scoring -> Board : surrounding(\nplacedTile.placement.position\n)
+Board --> Scoring : surroundingTiles
+
+
+loop peça vizinha
+
+    note right of Scoring
+    Mosteiros em peças vizinhas também
+    podem ter sido completados pela
+    colocação da nova peça.
+    end note
+
+end
+
+
+' =====================================================
+' REGIÕES CONECTADAS
+' =====================================================
+
+loop FeatureRef candidata ainda não processada
+
+    Scoring -> Connectivity : connectedRegion(\nboard, featureRef\n)
+    activate Connectivity
+
+    note right of Connectivity
+    Resolve a FeatureRegion global
+    usando BFS/DFS.
+    end note
+
+    Connectivity --> Scoring : region
+    deactivate Connectivity
+
+
+    Scoring -> Connectivity : isComplete(board, region)
+    activate Connectivity
+
+    Connectivity --> Scoring : complete?
+    deactivate Connectivity
+
+
+    alt região completa
+
+        note right of Scoring
+        Os MeeplePlacement já foram
+        recebidos como parâmetro.
+
+        Para cada placement:
+        region.contains(placement.feature)
+
+        conta-se a quantidade
+        por jogador.
+        end note
+
+
+        loop placement em meeples
+
+            Scoring -> Scoring : region.contains(\nplacement.feature\n)
+
+        end
+
+
+        note right of Scoring
+        recipients =
+        jogadores com a maior quantidade
+        de meeples na região.
+
+        Empates recebem os pontos integrais.
+        end note
+
+
+        Scoring -> Scoring : strategy = strategyFor(region.type)
+
+
+        note right of Scoring
+        Lookup por FeatureType.
+
+        O cálculo da fórmula é
+        polimórfico.
+        end note
+
+
+        Scoring -> Strategy : completedScore(board, region)
+        activate Strategy
+
+        Strategy --> Scoring : points
+        deactivate Strategy
+
+
+        create Award
+        Scoring -> Award : <<create>>(\nrecipients,\nregion,\npoints\n)
+
+        Award --> Scoring
+
+    end
+end
+
+
+Scoring --> Game : awards
+deactivate Scoring
+
+
+' =====================================================
+' APLICAÇÃO NO AGREGADO
+' =====================================================
+
+Game -> Game : applyAwards(awards)
+
+note right of Game
+applyAwards() é privado.
+
+ScoringRules calcula.
+Game altera o agregado.
+end note
+
+
+loop award em awards
+
+    loop recipient em award.recipients
+
+        Game -> Player : addScore(award.points)
+        activate Player
+
+        Player --> Game
+        deactivate Player
+
+    end
+
+
+    Game -> Game : removeMeeples(award.region)
+
+    note right of Game
+Todos os meeples da região
+são devolvidos, inclusive os
+de jogadores que não venceram
+a disputa por maioria.
+    end note
+
+end
+
+
+Game --> Engine
+deactivate Game
+
+@enduml

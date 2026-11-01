@@ -1,0 +1,226 @@
+@startuml
+title Pontuação de Final de Jogo e Encerramento
+
+hide footbox
+autonumber
+
+participant "engine: GameEngine\n<<Controller>>" as Engine
+participant "game: Game\n<<aggregate root>>" as Game
+
+participant "scoring: ScoringRules\n<<Pure Fabrication>>" as Scoring
+participant "connectivity: FeatureConnectivity\n<<Pure Fabrication>>" as Connectivity
+
+participant "board: Board" as Board
+
+participant "strategy: FeatureScoringStrategy\n<<Strategy>>" as Strategy
+participant "award: ScoreAward\n<<value object>>" as Award
+participant "player: Player" as Player
+
+
+note over Engine
+Este fluxo corresponde ao método privado
+GameEngine.finishGame().
+end note
+
+
+' =====================================================
+' PONTUAÇÃO FINAL
+' =====================================================
+
+Engine -> Game : scoreEndGame()
+activate Game
+
+
+Game -> Scoring : endGameAwards(\nboard,\nmeeples\n)
+activate Scoring
+
+
+note right of Scoring
+Somente regiões que ainda possuem
+MeeplePlacement precisam ser avaliadas.
+
+Cada FeatureRegion é processada
+uma única vez, mesmo que contenha
+vários meeples.
+end note
+
+
+loop MeeplePlacement cuja região ainda não foi processada
+
+    Scoring -> Connectivity : connectedRegion(\nboard,\nplacement.feature\n)
+    activate Connectivity
+
+    Connectivity --> Scoring : region
+    deactivate Connectivity
+
+
+    ' -------------------------------------------------
+    ' CONTROLE DA REGIÃO
+    ' -------------------------------------------------
+
+    loop candidatePlacement em meeples
+
+        Scoring -> Scoring : region.contains(\ncandidatePlacement.feature\n)
+
+    end
+
+
+    note right of Scoring
+    Conta-se a quantidade de meeples
+    de cada jogador na região.
+
+    recipients =
+    jogadores empatados na maior quantidade.
+    end note
+
+
+    ' -------------------------------------------------
+    ' STRATEGY
+    ' -------------------------------------------------
+
+    Scoring -> Scoring : strategy = strategyFor(region.type)
+
+
+    alt strategy é FieldScoringStrategy
+
+        Scoring -> Strategy : endGameScore(board, region)
+        activate Strategy
+
+
+        Strategy -> Connectivity : adjacentCityRegions(\nboard, region\n)
+        activate Connectivity
+
+        note right of Connectivity
+        Usa FieldCityAdjacency para
+        encontrar as cidades globais
+        adjacentes ao campo e eliminar
+        cidades duplicadas.
+        end note
+
+        Connectivity --> Strategy : adjacentCities
+        deactivate Connectivity
+
+
+        loop cityRegion em adjacentCities
+
+            Strategy -> Connectivity : isComplete(\nboard, cityRegion\n)
+            activate Connectivity
+
+            Connectivity --> Strategy : complete?
+            deactivate Connectivity
+
+        end
+
+
+        note right of Strategy
+        FIELD:
+
+        3 pontos por cidade
+        adjacente completa e distinta.
+        end note
+
+
+        Strategy --> Scoring : points
+        deactivate Strategy
+
+
+    else Road / City / Monastery Strategy
+
+        Scoring -> Strategy : endGameScore(board, region)
+        activate Strategy
+
+
+        note right of Strategy
+        Pontuação final:
+
+        ROAD
+        = 1 por Position distinta
+
+        CITY
+        = 1 por Position distinta
+          + 1 por escudo
+
+        MONASTERY
+        = 1 + quantidade de
+          peças ao redor
+        end note
+
+
+        Strategy --> Scoring : points
+        deactivate Strategy
+
+    end
+
+
+    create Award
+    Scoring -> Award : <<create>>(\nrecipients,\nregion,\npoints\n)
+
+    Award --> Scoring
+
+end
+
+
+Scoring --> Game : finalAwards
+deactivate Scoring
+
+
+' =====================================================
+' APLICAÇÃO DOS AWARDS
+' =====================================================
+
+Game -> Game : applyAwards(finalAwards)
+
+note right of Game
+applyAwards() permanece privado.
+
+O agregado é o único responsável por
+alterar pontuação e remover meeples.
+end note
+
+
+loop award em finalAwards
+
+    loop recipient em award.recipients
+
+        Game -> Player : addScore(award.points)
+        activate Player
+
+        Player --> Game
+        deactivate Player
+
+    end
+
+
+    Game -> Game : removeMeeples(award.region)
+
+end
+
+
+Game --> Engine
+deactivate Game
+
+
+' =====================================================
+' ENCERRAMENTO
+' =====================================================
+
+Engine -> Game : finish()
+activate Game
+
+note right of Game
+status = FINISHED
+end note
+
+Game --> Engine
+deactivate Game
+
+
+note right of Game
+winners() continua sendo uma
+consulta derivada da pontuação.
+
+Nenhum estado adicional de
+"vencedor" é armazenado.
+end note
+
+@enduml
